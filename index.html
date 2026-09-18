@@ -602,8 +602,23 @@ input[readonly]{background:var(--line-soft);color:var(--muted)}
 <!-- ============ ADMIN (backoffice codes PIN) ============ -->
 <main id="view-admin" hidden>
   <section class="blk">
-    <h2>Codes d'accès</h2>
-    <div class="hint">Crée un code PIN par personne, choisis son rôle, et active/désactive l'accès à tout moment — la coupure est immédiate, sans toucher aux autres codes.</div>
+    <h2>Codes d'installation (postes de travail)</h2>
+    <div class="hint">Un code à saisir <b>une seule fois</b> lors de la première ouverture sur un ordinateur. Une fois débloqué, ce poste reste utilisable librement par n'importe qui dans l'équipe, sans redemander de code — jusqu'à ce que tu le désactives ici, ce qui coupe l'accès immédiatement sur ce poste précis.</div>
+    <div class="newPinBox" id="newInstallBox">
+      <div style="font-size:13px;color:var(--muted);margin-bottom:4px">Nouveau code d'installation généré :</div>
+      <div class="code" id="newInstallCode">— — — — — —</div>
+    </div>
+    <div class="grid" style="margin-top:12px">
+      <div class="f"><label for="newInstallLabel">Nom du poste</label><input id="newInstallLabel" type="text" placeholder="ex. PC bureau, Tablette caisse…"></div>
+      <div class="f"><label for="newInstallCustom">Code à 6 chiffres <span class="unit">laisse vide pour en générer un au hasard</span></label><input id="newInstallCustom" inputmode="numeric" maxlength="6" placeholder="ex. 100200"></div>
+    </div>
+    <button class="primary" id="btnCreateInstall" style="margin-top:10px">Créer le code d'installation</button>
+    <div class="autherr" id="createInstallErr" style="display:none;text-align:left"></div>
+    <div id="installList" style="margin-top:18px"></div>
+  </section>
+  <section class="blk">
+    <h2>Codes d'accès individuels</h2>
+    <div class="hint">Optionnel : un code PIN personnel, pour une personne que tu veux suivre ou gérer individuellement (rôle admin, ou accès en lecture seule par exemple). Pas nécessaire pour l'usage quotidien de l'équipe.</div>
     <div class="newPinBox" id="newPinBox">
       <div style="font-size:13px;color:var(--muted);margin-bottom:4px">Nouveau code généré — communique-le à la personne :</div>
       <div class="code" id="newPinCode">— — — — — —</div>
@@ -618,7 +633,10 @@ input[readonly]{background:var(--line-soft);color:var(--muted)}
         </select>
       </div>
     </div>
-    <button class="primary" id="btnCreatePin" style="margin-top:10px">Générer un nouveau code</button>
+    <div class="grid" style="margin-top:12px">
+      <div class="f"><label for="newPinCustom">Code à 6 chiffres <span class="unit">laisse vide pour en générer un au hasard</span></label><input id="newPinCustom" inputmode="numeric" maxlength="6" placeholder="ex. 481632"></div>
+    </div>
+    <button class="primary" id="btnCreatePin" style="margin-top:10px">Créer le code</button>
     <div class="autherr" id="createErr" style="display:none;text-align:left"></div>
     <div id="userList" style="margin-top:18px"></div>
   </section>
@@ -1381,7 +1399,7 @@ function showTab(name){
   el("stepTitle").parentElement.style.display = (name === "saisie") ? "flex" : "none";
   updateHeaderHeightVar();
   if(name === "mois") renderMonth();
-  if(name === "admin") renderUserList();
+  if(name === "admin"){ renderUserList(); renderInstallList(); }
   syncStickyHead();
   window.scrollTo({top:0});
 }
@@ -1530,7 +1548,7 @@ firebase.initializeApp(firebaseConfig);
 var secondaryApp = firebase.initializeApp(firebaseConfig, "secondary");
 var auth = firebase.auth();
 var fs = firebase.firestore();
-var myUid = null, myRole = "manager", myUnsub = null, dataConnected = false;
+var myUid = null, myRole = "manager", myUnsub = null, installUnsub = null, dataConnected = false;
 var pinBuffer = "";
 
 function renderPinDots(){
@@ -1570,19 +1588,31 @@ function attemptPinLogin(){
   el("pinSub").textContent = "Vérification…";
   auth.signInWithEmailAndPassword(pin+PIN_DOMAIN, pin).catch(function(e){
     if(e.code === "auth/user-not-found" || e.code === "auth/invalid-credential"){
-      // premier code jamais utilisé : si le verrou "bootstrap" n'existe pas encore, il devient admin fondateur
-      fs.doc("system/bootstrap").get().then(function(doc){
-        if(!doc.exists){
-          auth.createUserWithEmailAndPassword(pin+PIN_DOMAIN, pin).then(function(cred){
+      // pas un compte personnel connu : est-ce un code d'installation de poste ?
+      fs.doc("install_codes/"+pin).get().then(function(icDoc){
+        if(icDoc.exists && icDoc.data().active){
+          return auth.signInAnonymously().then(function(cred){
             return fs.doc("users/"+cred.user.uid).set({
-              pin: pin, name: "Administrateur", role: "admin", active: true, createdAt: new Date().toISOString()
-            }).then(function(){
-              return fs.doc("system/bootstrap").set({done:true, at:new Date().toISOString()});
+              role: "manager", active: true,
+              name: icDoc.data().label || ("Poste "+pin),
+              installCode: pin, createdAt: new Date().toISOString()
             });
-          }).catch(function(e2){ resetPin("Erreur de création du compte administrateur."); });
-        } else {
-          resetPin("Code incorrect.");
+          });
         }
+        // pas de code d'install valide : premier code jamais tapé -> admin fondateur (si pas encore bootstrap)
+        return fs.doc("system/bootstrap").get().then(function(bDoc){
+          if(!bDoc.exists){
+            return auth.createUserWithEmailAndPassword(pin+PIN_DOMAIN, pin).then(function(cred){
+              return fs.doc("users/"+cred.user.uid).set({
+                pin: pin, name: "Administrateur", role: "admin", active: true, createdAt: new Date().toISOString()
+              }).then(function(){
+                return fs.doc("system/bootstrap").set({done:true, at:new Date().toISOString()});
+              });
+            });
+          } else {
+            resetPin("Code incorrect.");
+          }
+        });
       }).catch(function(e3){ resetPin("Erreur de connexion au serveur."); });
     } else {
       resetPin("Code incorrect.");
@@ -1600,6 +1630,7 @@ el("btnLogout").onclick = function(){ auth.signOut(); };
 
 auth.onAuthStateChanged(function(user){
   if(myUnsub){ myUnsub(); myUnsub = null; }
+  if(installUnsub){ installUnsub(); installUnsub = null; }
   if(!user){
     myUid = null;
     el("scr-app").hidden = true;
@@ -1619,6 +1650,14 @@ auth.onAuthStateChanged(function(user){
       el("saveMsg").textContent = "Tu peux consulter le reporting mais pas le modifier.";
     } else {
       setStatus("Connecté");
+    }
+    if(data.installCode && !installUnsub){
+      installUnsub = fs.doc("install_codes/"+data.installCode).onSnapshot(function(icDoc){
+        if(!icDoc.exists || !icDoc.data().active){
+          resetPin("Ce poste a été désactivé.");
+          auth.signOut();
+        }
+      });
     }
     pinBuffer = ""; renderPinDots(); pinErrClear();
     el("scr-pin").hidden = true;
@@ -1648,7 +1687,8 @@ var cachedUsers = [];
 function renderUserList(){
   fs.collection("users").onSnapshot(function(snap){
     cachedUsers = snap.docs.map(function(d){ return Object.assign({uid:d.id}, d.data()); });
-    var rows = cachedUsers.map(function(u){
+    var perso = cachedUsers.filter(function(u){ return !u.installCode; });
+    var rows = perso.map(function(u){
       var isMe = u.uid === myUid;
       return (
         '<div class="userrow">' +
@@ -1659,19 +1699,39 @@ function renderUserList(){
             '<option value="lecture"'+(u.role==="lecture"?" selected":"")+'>Lecture seule</option>' +
             '<option value="admin"'+(u.role==="admin"?" selected":"")+'>Admin</option>' +
           '</select>' +
-          '<button class="toggleBtn '+(u.active?"active":"inactive")+'" data-uid="'+u.uid+'" data-act="toggle">'+(u.active?"Actif":"Inactif")+'</button>' +
-          '<button class="delBtn" data-uid="'+u.uid+'" data-act="del">Suppr.</button>' +
+          '<button class="toggleBtn '+(u.active?"active":"inactive")+'" data-coll="users" data-uid="'+u.uid+'" data-act="toggle">'+(u.active?"Actif":"Inactif")+'</button>' +
+          '<button class="delBtn" data-coll="users" data-uid="'+u.uid+'" data-act="del">Suppr.</button>' +
         '</div>'
       );
     });
-    el("userList").innerHTML = rows.join("") || '<div class="hint">Aucun code pour l’instant.</div>';
+    el("userList").innerHTML = rows.join("") || '<div class="hint">Aucun code personnel pour l’instant.</div>';
+  });
+}
+var installListBound = false;
+function renderInstallList(){
+  if(installListBound) return;
+  installListBound = true;
+  fs.collection("install_codes").onSnapshot(function(snap){
+    var rows = snap.docs.map(function(d){
+      var u = d.data(), code = d.id;
+      return (
+        '<div class="userrow">' +
+          '<div class="userinfo"><div class="em">'+code+'</div>' +
+          '<div class="meta">'+(u.label||"")+'</div></div>' +
+          '<button class="toggleBtn '+(u.active?"active":"inactive")+'" data-coll="install_codes" data-uid="'+code+'" data-act="toggle">'+(u.active?"Actif":"Inactif")+'</button>' +
+          '<button class="delBtn" data-coll="install_codes" data-uid="'+code+'" data-act="del">Suppr.</button>' +
+        '</div>'
+      );
+    });
+    el("installList").innerHTML = rows.join("") || '<div class="hint">Aucun poste installé pour l’instant.</div>';
   });
 }
 document.addEventListener("click", function(e){
   var btn = e.target.closest(".toggleBtn, .delBtn");
   if(!btn) return;
   var uid = btn.getAttribute("data-uid"), act = btn.getAttribute("data-act");
-  var ref = fs.doc("users/"+uid);
+  var coll = btn.getAttribute("data-coll") || "users";
+  var ref = fs.doc(coll+"/"+uid);
   if(act === "toggle"){
     ref.get().then(function(doc){ ref.update({active: !(doc.data().active)}); });
   } else if(act === "del"){
@@ -1688,15 +1748,44 @@ function randomPin(){
   var n = Math.floor(100000 + Math.random()*900000);
   return String(n);
 }
+el("btnCreateInstall").onclick = function(){
+  var label = el("newInstallLabel").value.trim();
+  var custom = el("newInstallCustom").value.trim();
+  var errBox = el("createInstallErr");
+  errBox.style.display = "none";
+  if(!label){ errBox.textContent = "Indique un nom de poste."; errBox.style.display = "block"; return; }
+  var code = custom || randomPin();
+  if(!/^\d{6}$/.test(code)){ errBox.textContent = "Le code doit comporter exactement 6 chiffres."; errBox.style.display = "block"; return; }
+  el("btnCreateInstall").disabled = true;
+  fs.doc("install_codes/"+code).get().then(function(doc){
+    if(doc.exists){ throw {message:"Ce code est déjà utilisé — choisis-en un autre."}; }
+    return fs.doc("install_codes/"+code).set({label: label, active: true, createdAt: new Date().toISOString()});
+  }).then(function(){
+    el("newInstallBox").style.display = "block";
+    el("newInstallCode").textContent = code.slice(0,3)+" "+code.slice(3);
+    el("newInstallLabel").value = "";
+    el("newInstallCustom").value = "";
+  }).catch(function(e){
+    errBox.textContent = e.message || "Erreur : impossible de créer ce code.";
+    errBox.style.display = "block";
+  }).finally(function(){ el("btnCreateInstall").disabled = false; });
+};
 el("btnCreatePin").onclick = function(){
   var name = el("newPinName").value.trim();
   var role = el("newPinRole").value;
+  var custom = el("newPinCustom").value.trim();
   var errBox = el("createErr");
   errBox.style.display = "none";
   if(!name){ errBox.textContent = "Indique un prénom."; errBox.style.display = "block"; return; }
   var existingPins = cachedUsers.map(function(u){ return u.pin; });
   var pin;
-  do { pin = randomPin(); } while(existingPins.indexOf(pin) !== -1);
+  if(custom){
+    if(!/^\d{6}$/.test(custom)){ errBox.textContent = "Le code doit comporter exactement 6 chiffres."; errBox.style.display = "block"; return; }
+    if(existingPins.indexOf(custom) !== -1){ errBox.textContent = "Ce code est déjà utilisé par quelqu'un d'autre — choisis-en un autre."; errBox.style.display = "block"; return; }
+    pin = custom;
+  } else {
+    do { pin = randomPin(); } while(existingPins.indexOf(pin) !== -1);
+  }
   el("btnCreatePin").disabled = true;
   var auxAuth = secondaryApp.auth();
   auxAuth.createUserWithEmailAndPassword(pin+PIN_DOMAIN, pin).then(function(cred){
@@ -1708,6 +1797,7 @@ el("btnCreatePin").onclick = function(){
     el("newPinBox").style.display = "block";
     el("newPinCode").textContent = pin.slice(0,3)+" "+pin.slice(3);
     el("newPinName").value = "";
+    el("newPinCustom").value = "";
   }).catch(function(e){
     errBox.textContent = "Erreur : "+(e.message||"impossible de créer ce code.");
     errBox.style.display = "block";
