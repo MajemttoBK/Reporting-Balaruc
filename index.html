@@ -1569,9 +1569,9 @@ function attemptPinLogin(){
   el("pinSub").textContent = "Vérification…";
   auth.signInWithEmailAndPassword(pin+PIN_DOMAIN, pin).catch(function(e){
     if(e.code === "auth/user-not-found" || e.code === "auth/invalid-credential"){
-      // premier code jamais utilisé : si aucun compte n'existe encore, il devient admin fondateur
-      fs.collection("users").limit(1).get().then(function(snap){
-        if(snap.empty){
+      // premier code jamais utilisé : si le verrou "bootstrap" n'existe pas encore, il devient admin fondateur
+      fs.doc("system/bootstrap").get().then(function(doc){
+        if(!doc.exists){
           auth.createUserWithEmailAndPassword(pin+PIN_DOMAIN, pin).then(function(cred){
             return fs.doc("users/"+cred.user.uid).set({
               pin: pin, name: "Administrateur", role: "admin", active: true, createdAt: new Date().toISOString()
@@ -1582,7 +1582,7 @@ function attemptPinLogin(){
         } else {
           resetPin("Code incorrect.");
         }
-      });
+      }).catch(function(e3){ resetPin("Erreur de connexion au serveur."); });
     } else {
       resetPin("Code incorrect.");
     }
